@@ -1,0 +1,1133 @@
+---
+title: "Bayesian Data Analysis Assignment 1"
+author: "Johnny Lee (s1687781)"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+![](rotifer.jpg){width="55%"} ![](algae.jpg){width="38%"}
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=TRUE)
+Sys.setlocale("LC_ALL", "English")
+options(max.print = 100)
+library(rjags)
+library(imputeTS)
+library(INLA)
+```
+The first picture is a rotifier (by Steve Gschmeissner), the second is a
+unicellular algae (by NEON ja, colored by Richard Bartz).
+
+**Problem 1 - Rotifier and algae data**
+
+**In this problem, we study an experimental dataset (Blasius et al.
+2020, <https://doi.org/10.1038/s41586-019-1857-0>) about predator-prey
+relationship between two microscopic organism: rotifier (predator) and
+unicellular green algae (prey). These were studied in a controlled
+environment (water tank) in a laboratory over 375 days. The dataset
+contains daily observations of the concentration of algae and rotifiers.
+The units of measurement in the algae column is** $\mathbf{10^6}$
+**algae cells per ml of water, while in the rotifier column it is the
+number of rotifiers per ml of water.**
+
+**We are going to apply a simple two dimensional state space model on
+this data using JAGS. The first step is to load JAGS and the dataset.**
+
+```{r}
+rotifier_algae <- read.csv("rotifier_algae.csv")
+#The first 6 rows of the dataframe
+print.data.frame(rotifier_algae[1:6,])
+```
+
+**As we can see, some values in the dataset are missing (NA)**.
+
+**We are going to model the true log concentrations** $\mathbf{x}_t$
+**by the state space
+model**$$\mathbf{x}_t = \mathbf{A} \mathbf{x}_{t-1}+\mathbf{b}+\mathbf{w}_t; \quad \mathbf{w}_t\sim N\left(0,\left(\begin{matrix}\sigma_R^2 & 0\\ 0 & \sigma_A^2\end{matrix}\right)\right)$$\
+**where** $\mathbf{A}$**,** $\mathbf{b}$, $\sigma^2_R$ **and**
+$\sigma^2_A$ **are model parameters, and** $t$ **denotes the time point.
+In particular,** $t=0$ **corresponds to day 0, and** $t=1,2,\ldots, 375$
+**correspond to days 1-375.**
+
+**Here** $\mathbf{x}_t$ **is a two dimensional vector. The first
+component denotes the logarithm of the rotifier concentration measured
+in number of rotifiers per ml of water, and the second component denotes
+the logarithm of the algae concentration measured in** $10^6$ **algae
+per ml (these units are the same as in the dataset).**
+$\mathbf{A}=\left(\begin{matrix}A_{11} & A_{12}\\ A_{21} & A_{22}\end{matrix}\right)$
+**is a two times two matrix, and** $\mathbf{b}$ **is a two dimensional
+vector.**
+
+**The observation process is described as**
+$$\mathbf{y}_t =\mathbf{x}_{t}+\mathbf{v}_t, \quad \mathbf{v}_t\sim N\left(0,\left(\begin{matrix}\eta_R^2 & 0\\ 0 & \eta_A^2\end{matrix}\right)\right),$$
+
+**where** $\mathbf{y}_t$ **is the observed log concentration on day**
+$t$ **(for example,**
+$\mathbf{y}_2=\left(\begin{matrix}\log(6.58)\\ \log(0.82)\end{matrix}\right)$
+**in our dataset), while** $\eta_R^2$ **and** $\eta_R^2$ **are
+additional model parameters.**
+
+\newpage
+
+**a)[10 marks] Create a JAGS model that fits the above state space model
+on the rotifier-algae dataset for the whole 375 days period.**
+
+**Use 10000 burn-in steps and obtain 50000 samples from the model
+parameters**
+$\mathbf{A}, \mathbf{b}, \sigma_R^2, \sigma_A^2, \eta_R^2, \eta_A^2$
+**(4+2+4=10 parameters in total).**
+
+**Use a Gaussian prior**
+$N\left(\left(\begin{matrix}\log(6)\\ \log(1.5) \end{matrix}\right), \left(\begin{matrix}4 & 0\\ 0 & 4\end{matrix}\right) \right)$
+**for the initial state** $\mathbf{x}_0$**, independent Gaussian**
+$N(0,1)$ **priors for each 4 elements of** $\mathbf{A}$, **Gaussian
+prior**
+$N\left(\left(\begin{matrix}0\\ 0 \end{matrix}\right), \left(\begin{matrix}1 & 0\\ 0 & 1\end{matrix}\right) \right)$
+**for** $\mathbf{b}$**, and inverse Gamma (0.1,0.1) prior for the
+variance parameters** $\sigma_R^2, \sigma_A^2, \eta_R^2, \eta_A^2$**.**
+
+**Explain how did you handle the fact that some of the observations are
+missing (NA) in the dataset.**
+
+**Explanation**:
+
+From running the `summary()` function, we can observe $7$ and $8$ missing values for algae and rotifier respectively. The column rotifier has additionally missing value which appears in Day 1 and the rest of the missing values occurs in pair on the same day. Since the data is a time series data, omitting nor imputing the values will change the distribution and the decrease the variance of the data thus effect the distribution of prior/likelihood. Taking note that the covariance matrices are diagonal matrices, we can then assume the independence of algae and rotifier. Thus, in JAGS, we do not have to define the model string as multivariate normal distribution but as a univariate normal distribution. Also, we take the advantage of dealing the missing values here as JAGS automatically takes into account of the missing values in algae and rotifier data. Therefore, we do not make imputation nor omit the missing values.
+
+```{r}
+summary(rotifier_algae)
+head(rotifier_algae, 10)
+```
+
+```{r}
+#defining the total number of days
+n <- nrow(rotifier_algae) + 1
+#defining the log concentration for each rotifier and algae
+y1 <- c(NA, log(rotifier_algae[, 3]))
+y2 <- c(NA, log(rotifier_algae[, 2]))
+```
+
+```{r}
+model.string <- "model {
+
+x1[1] ~ dnorm(mean.x01, tau.x0)
+x2[1] ~ dnorm(mean.x02, tau.x0)
+
+a11 ~ dnorm(mean.a, tau.a)
+a12 ~ dnorm(mean.a, tau.a)
+a21 ~ dnorm(mean.a, tau.a)
+a22 ~ dnorm(mean.a, tau.a)
+
+b1 ~ dnorm(mean.b, tau.b)
+b2 ~ dnorm(mean.b, tau.b)
+
+tau.sigma2r ~ dgamma(sigma.a, sigma.b)
+tau.sigma2a ~ dgamma(sigma.a, sigma.b)
+tau.eta2r ~ dgamma(eta.a, eta.b)
+tau.eta2a ~ dgamma(eta.a, eta.b)
+
+
+sigma2r <- 1/tau.sigma2r
+sigma2a <- 1/tau.sigma2a
+eta2r <- 1/tau.eta2r
+eta2a <- 1/tau.eta2a
+
+for (i in 2:n){
+  x1[i] ~ dnorm(a11*x1[i-1] + a12*x2[i-1] + b1, tau.sigma2r)
+  x2[i] ~ dnorm(a21*x1[i-1] + a22*x2[i-1] + b2, tau.sigma2a)
+  
+}
+
+for (i in 1:n){
+  y1[i] ~ dnorm(x1[i], tau.eta2r)
+  y2[i] ~ dnorm(x2[i], tau.eta2a)
+}
+}"
+```
+
+```{r}
+#initialising the values for JAGS model
+#initialising log concentration, x
+mean.x01 <- log(6); mean.x02 <- log(1.5); tau.x0 <- 1/4
+
+#initialising A and b
+mean.a <- mean.b <- 0
+tau.a <- tau.b <- 1
+
+#initialising the noise sigma and eta
+sigma.a <- sigma.b <- eta.a <- eta.b <- 0.1
+
+model.data <- list(n = n, y1 = y1, y2 = y2, mean.x01 = mean.x01,
+                   mean.x02 = mean.x02, tau.x0 = tau.x0, 
+                   mean.a = mean.a, tau.a = tau.a, 
+                   mean.b = mean.b, tau.b = tau.b, sigma.a = sigma.a, 
+                   sigma.b = sigma.b, eta.a = eta.a, eta.b = eta.b)
+```
+
+```{r}
+#Defining the state space model in JAGS
+model <- jags.model(textConnection(model.string), 
+                    data = model.data, n.chains = 1)
+```
+```{r}
+#Burnin for 10000 samples
+update(model, 10000, progress.bar="none")
+#Running the model, monitoring A, b, sigma23, sigma2a, eta2r, eta2a
+#with 50000 iterations
+res <- coda.samples(model,
+                        variable.names=c("a11", "a12", "a21", "a22",
+                                         "b1", "b2", "sigma2r","sigma2a",
+                                         "eta2r","eta2a"),
+                        n.iter = 50000, progress.bar="none")
+```
+
+```{r}
+#summary statistics
+summary(res)
+```
+
+\newpage
+
+**b)[10 marks]**
+
+**Based on your MCMC samples, compute the Gelman-Rubin convergence
+diagnostics (Hint: you need to run multiple chains in parallel for this
+by setting the n.chains parameter). Discuss how well has the chain
+converged to the stationary distribution based on the results.**
+
+**Print out the summary of the fitted JAGS model. Do autocorrelation
+plots for the 4 components of the model parameter** $\mathbf{A}$**.**
+
+**Compute and print out the effective sample sizes (ESS) for each of the
+model parameters**
+$\mathbf{A}, \mathbf{b}, \sigma_R^2, \sigma_A^2, \eta_R^2, \eta_A^2$**.**
+
+**If the ESS is below 1000 for any of these 10 parameters, increase the
+sample size/number of chains until the ESS is above 1000 for all 10
+parameters.**
+
+**Explanation**:
+
+We compiled a JAGS model with $5$ chains and ran the model with $10000$ burn-in and $50000$ iterations. Based on the MCMC samples, we conducted several test to check for good mixing. First, we computed the Gelman-Rubin convergence diagnostics. Looking at the plot above, we can see that all parameters shrinks to the value of $1$ quickly once the sampling starts. To further solidify this, we see that the Gelman-Rubin Statistics confirms its convergence by indicating its value as $1$ for all parameters. Thus, this indicates good mixing.
+
+Now, we look at the autocorrelation plot for the $4$ components of $A$. To describe, We see that the ACF value for $a[2,2]$ shrinks to $0$ after $50$ lags where it is fast compared to rest. Nonetheless, we observed the shrinkage of the ACF values to near zero for the rest of the components about lag $150$. Therefore, this also indicates good mixing of the MCMC sample.
+
+Last but not least, the trace plots of all the components indicated good mixing as there are no significant patterns sticking out of the trace plots. To that, we tabulated the effective size for each parameters and confirmed that their effective size is greater than $1000$.
+
+```{r}
+#Defining the JAGS model with 5 chains
+model.chain <- jags.model(textConnection(model.string), 
+                    data = model.data, n.chain = 5)
+```
+
+```{r}
+#Burning for 10000 samples
+update(model.chain, 10000, progress.bar = "none")
+#Running the model, monitoring A, b, sigma23, sigma2a, eta2r, eta2a
+#with 130000 iterations
+res.chain <- coda.samples(model.chain,
+                        variable.names = c("a11", "a12", "a21", "a22",
+                                         "b1", "b2", "sigma2r","sigma2a",
+                                         "eta2r","eta2a"),
+                        n.iter = 130000, progress.bar="none")
+```
+
+```{r}
+summary(res.chain)
+```
+
+```{r}
+#Computing Gelman-Rubin statistics
+par(mfrow=c(3,2),mar=c(1.5,1.5,1.5,1.5))
+gelman.plot(res.chain)
+gelman.diag(res.chain)
+```
+
+
+```{r}
+#Computing Autocorrelation plot for the 4 components of the model parameter A
+par(mfrow=c(2,2))
+acf(res.chain[[1]][,"a11"], lag.max=200)
+acf(res.chain[[1]][,"a12"], lag.max=200)
+acf(res.chain[[1]][,"a21"], lag.max=200)
+acf(res.chain[[1]][,"a22"], lag.max=200)
+```
+
+
+```{r}
+#Computing Trace plot for each parameters
+par(mfrow=c(1,1))
+plot(res.chain) 
+```
+
+```{r}
+#Computing the Effective sample size.
+esize <- c()
+for (i in c(1:10)){
+  esize <- c(esize, effectiveSize(res.chain[[1]][,i]))
+}
+esize <- t(data.frame(esize))
+colnames(esize) <- colnames(res.chain[[1]])
+esize
+```
+
+\newpage
+
+**c)[10 marks]**
+
+**We are going to perform posterior predictive checks to evaluate the
+fit of this model on the data (using the priors stated in question a).
+First, create replicate observations from the posterior predictive using
+JAGS. The number of replicate observations should be at least 1000.**
+
+**Compute the minimum, maximum, and median for both log-concentrations
+(i.e. both for rotifier and algae,** $3\cdot 2=6$ **in total).**
+
+**Plot the histograms for these quantities together with a line that
+shows the value of the function considered on the actual dataset (see
+the R code for Lecture 2 for an example). Compute the DIC score for the
+model (Hint: you can use the `dic.samples` function for this).**
+
+**Discuss the results.**
+
+**Explanation**: 
+
+The histograms above show posterior predictive distribution for the minimum, maximum and median of rotifier and algae. The values in the observed data set are shown by vertical red lines. The lines seem to be within the typical range of the replicates, showing a reasonably good fit. To evaluate the fit of the model, we computed the Deviance Information Criteria (DIC) value and later we use it for the comparison in part d.
+
+```{r}
+#Defining separate model string to perform posterior predictive check
+model.string.replicate <- "model {
+
+x1[1] ~ dnorm(mean.x01, tau.x0)
+x2[1] ~ dnorm(mean.x02, tau.x0)
+
+a11 ~ dnorm(mean.a, tau.a)
+a12 ~ dnorm(mean.a, tau.a)
+a21 ~ dnorm(mean.a, tau.a)
+a22 ~ dnorm(mean.a, tau.a)
+
+b1 ~ dnorm(mean.b, tau.b)
+b2 ~ dnorm(mean.b, tau.b)
+
+tau.sigma2r ~ dgamma(sigma.a, sigma.b)
+tau.sigma2a ~ dgamma(sigma.a, sigma.b)
+tau.eta2r ~ dgamma(eta.a, eta.b)
+tau.eta2a ~ dgamma(eta.a, eta.b)
+
+
+sigma2r <- 1/tau.sigma2r
+sigma2a <- 1/tau.sigma2a
+eta2r <- 1/tau.eta2r
+eta2a <- 1/tau.eta2a
+
+for (i in 2:n){
+  x1[i] ~ dnorm(a11*x1[i-1] + a12*x2[i-1] + b1, tau.sigma2r)
+  x2[i] ~ dnorm(a21*x1[i-1] + a22*x2[i-1] + b2, tau.sigma2a)
+  
+}
+
+for (i in 1:n){
+  y1[i] ~ dnorm(x1[i], tau.eta2r)
+  y1.replicate[i] ~ dnorm(x1[i], tau.eta2r)
+  y2[i] ~ dnorm(x2[i], tau.eta2a)
+  y2.replicate[i] ~ dnorm(x2[i], tau.eta2a)
+}
+}"
+```
+```{r}
+mean.x01 <- log(6)
+mean.x02 <- log(1.5)
+tau.x0 <- 1/4
+mean.a <- mean.b <- 0
+tau.a <- tau.b <- 1
+
+sigma.a <- sigma.b <- eta.a <- eta.b <- 0.1
+
+model.data <- list(n = n, y1 = y1, y2 = y2, mean.x01 = mean.x01,
+                   mean.x02 = mean.x02, tau.x0 = tau.x0, 
+                   mean.a = mean.a, tau.a = tau.a, 
+                   mean.b = mean.b, tau.b = tau.b, sigma.a = sigma.a, 
+                   sigma.b = sigma.b, eta.a = eta.a, eta.b = eta.b)
+```
+
+
+```{r}
+model.replicate <- jags.model(textConnection(model.string.replicate), 
+                    data = model.data, n.chains = 5)
+```
+
+```{r}
+#MCMC Sampling with burnin 10000 and 10000 iterations to perform
+#posterior predictive checks
+update(model.replicate, 10000, progress.bar = "none")
+res.replicate <- coda.samples(model.replicate,
+                        variable.names=c("y1.replicate", "y2.replicate"),
+                        n.iter = 10000 , progress.bar = "none")
+```
+
+```{r}
+#convert the output into a matrix
+resmat <- as.matrix(res.replicate)
+resmat.y1.replicate <- as.matrix(res.replicate[,1:376])
+resmat.y2.replicate <- as.matrix(res.replicate[,377:752])
+niterf <- nrow(resmat)
+
+#Compute posterior predictive distribution of min, max and median #log(concentration) of rotifier
+yrep1 <- t(resmat.y1.replicate[1:niterf,1:n])
+yrep1min <- apply(yrep1,2,min)
+yrep1max <- apply(yrep1,2,max)
+yrep1median <- apply(yrep1,2,median)
+
+#Compute posterior predictive distribution of min, max and median #log(concentration) of algae
+yrep2 <- t(resmat.y2.replicate[1:niterf,1:n])
+yrep2min <- apply(yrep2,2,min)
+yrep2max <- apply(yrep2,2,max)
+yrep2median <- apply(yrep2,2,median)
+```
+
+```{r}
+par(mfrow=c(3,2))
+hist(yrep1min, col = "gray40", 
+     main = "Predictive distribution for minimum for rotifier")
+abline(v = min(na.omit(y1)),col = "red",lwd = 2)
+hist(yrep2min, col = "gray40",
+     main = "Predictive distribution for minimum for algae")
+abline(v = min(na.omit(y2)),col = "red",lwd = 2)
+hist(yrep1max,col = "gray40",
+     main = "Predictive distribution for maximum for rotifier")
+abline(v = max(na.omit(y1)),col = "red",lwd = 2)
+hist(yrep2max,col = "gray40",
+     main = "Predictive distribution for maximum for algae")
+abline(v = max(na.omit(y2)),col = "red",lwd = 2)
+hist(yrep1median,col="gray40",
+     main = "Predictive distribution for median for rotifier")
+abline(v = median(na.omit(y1)),col = "red",lwd = 2)
+hist(yrep2median,col="gray40",
+     main = "Predictive distribution for median for algae")
+abline(v = median(na.omit(y2)),col = "red",lwd = 2)
+```
+
+```{r}
+dic.samples(model.replicate, n.iter = 10000, progress.bar = "none")
+```
+
+\newpage
+
+**d)[10 marks]**
+
+**Discuss the meaning of the** **model parameters**
+$\mathbf{A}, \mathbf{b}, \sigma_R^2, \sigma_A^2, \eta_R^2, \eta_A^2$**.
+Find a website or paper that that contains information about rotifiers
+and unicellular algae (Hint: you can use Google search for this). Using
+your understanding of the meaning of model parameters and the biological
+information about these organisms, construct more informative prior
+distributions for the model parameters. State in your report the source
+of information and the rationale for your choices of priors.**
+
+**Re-implement the JAGS model with these new priors. Perform the same
+posterior predictive checks as in part c) to evaluate the fit of this
+new model on the data.**
+
+**Compute the DIC score for the model as well (Hint: lower DIC score
+indicates better fit on the data).**
+
+**Discuss whether your new priors have improved the model fit compared
+to the original prior from a).**
+
+**Explanation**:
+
+We refer to the work presented by [Blasius et al. 2020](https://www.nature.com/articles/s41586-019-1857-0) and [Fussmannn et al. 2019](https://www.frontiersin.org/articles/10.3389/fevo.2018.00234/full).
+
+The paper suggests that the diagonal terms of $A$ are the mortality rate and predator assimilation efficacy for rotifier and algae respectively. Also, $b$ is the maximal growth rate of rotifier and algae . The off-diagonal terms of $A$ will remain the same and different to the paper. This is because the paper uses a more complex model accounting for nitrogen, rotifier and algae whereas our models were simplified to rotifier and algae specifically. Then, we employ the initial values that were suggested in from the paper and the model string is as below.
+
+Thus, the implementation with the priors are shown below.
+
+\begin{equation}
+  \begin{split}
+    \mathbf{A_{11}}&\sim N(0.15, 1) \\ 
+    \mathbf{A_{12}}&\sim N(0, 1) \\
+    \mathbf{A_{21}}&\sim N(0, 1) \\
+    \mathbf{A_{22}}&\sim N(0.25, 1) \\
+    \mathbf{b}_t&\sim N\left(\left(
+    \begin{matrix} 
+      log(2.25) \\ log(3.3) 
+    \end{matrix}
+    \right),\left(
+    \begin{matrix}
+      1 & 0 \\ 0 & 1
+    \end{matrix}
+    \right)\right) \\
+  \end{split}
+\end{equation}
+
+Similar to part c, we can deduce that the observed min, max and median for both rotifier and algae is within typical range of the replicated posterior predictive distribution. Comparing this to the histogram in part c, they have similar shapes as we kept the same model with different initial values for the prior. Overall, we now know that model is a good fit of the data.
+Now, we compare the DIC values against the previous part. From this, we can see that our new model with more informative prior has a lower DIC value and indicates a better fit on the data.
+
+```{r}
+#new model string defined.
+model.string.fussmann <- "model {
+
+x1[1] ~ dnorm(mean.x01, tau.x0)
+x2[1] ~ dnorm(mean.x02, tau.x0)
+
+a11 ~ dnorm(mean.a11, tau.a)
+a12 ~ dnorm(mean.a12, tau.a)
+a21 ~ dnorm(mean.a21, tau.a)
+a22 ~ dnorm(mean.a22, tau.a)
+
+b1 ~ dnorm(mean.b1, tau.b)
+b2 ~ dnorm(mean.b2, tau.b)
+
+tau.sigma2r ~ dgamma(sigma.a, sigma.b)
+tau.sigma2a ~ dgamma(sigma.a, sigma.b)
+tau.eta2r ~ dgamma(eta.a, eta.b)
+tau.eta2a ~ dgamma(eta.a, eta.b)
+
+sigma2r <- 1 / tau.sigma2r
+sigma2a <- 1 / tau.sigma2a
+eta2r <- 1 / tau.eta2r
+eta2a <- 1 / tau.eta2a
+
+for (i in 2:n){
+  x1[i] ~ dnorm(a11 * x1[i-1] + a12 * x2[i-1] + b1, tau.sigma2r)
+  x2[i] ~ dnorm(a21 * x1[i-1] + a22 * x2[i-1] + b2, tau.sigma2a)
+  
+}
+
+for (i in 1:n){
+  y1[i] ~ dnorm(x1[i], tau.eta2r)
+  y1.replicate[i] ~ dnorm(x1[i], tau.eta2r)
+  y2[i] ~ dnorm(x2[i], tau.eta2a)
+  y2.replicate[i] ~ dnorm(x2[i], tau.eta2a)
+}
+}"
+```
+
+```{r}
+#reinitialising the total number of days and log concentration vector.
+n <- nrow(rotifier_algae) + 1
+y1 <- c(NA, log(rotifier_algae[, 3]))
+y2 <- c(NA, log(rotifier_algae[, 2]))
+
+#using the same initial values for x, sigma2 and eta2
+mean.x01 <- log(6); mean.x02 <- log(1.5); tau.x0 <- 1/4
+sigma.a <- sigma.b <- eta.a <- eta.b <- 0.1
+
+#initialising A with new values
+mean.a11 <- 0.15; mean.a22 <- 0.25
+mean.a12 <- mean.a21 <- 0
+
+#initialising b with new value
+mean.b1 <- log(2.25); mean.b2 <- log(3.3)
+tau.a <- tau.b <- 1
+
+
+
+model.data <- list(n = n, y1 = y1, y2 = y2, mean.x01 = mean.x01,
+                   mean.x02 = mean.x02, tau.x0 = tau.x0, 
+                   mean.a11 = mean.a11, mean.a12 = mean.a12, 
+                   mean.a21 = mean.a21, mean.a22 = mean.a22,
+                   tau.a = tau.a, mean.b1 = mean.b1, mean.b2 = mean.b2,
+                   tau.b = tau.b, sigma.a = sigma.a, 
+                   sigma.b = sigma.b, eta.a = eta.a, eta.b = eta.b)
+```
+
+```{r}
+#Defining the model with more informative prior with 5 chains.
+model.fussmann <- jags.model(textConnection(model.string.fussmann),
+                    data = model.data, n.chains = 5)
+```
+
+```{r}
+#sampling for posterior predictive checks with burning value of 10000 and
+#10000 iterations
+update(model.fussmann, 10000, progress.bar = "none")
+res.fussmann <- coda.samples(model.fussmann,
+                        variable.names = c("y1.replicate", "y2.replicate"),
+                        n.iter = 10000, progress.bar = "none")
+```
+
+```{r}
+#convert the output into a matrix
+resmat <- as.matrix(res.fussmann)
+resmat.y1.replicate <- as.matrix(res.fussmann[,1:376])
+resmat.y2.replicate <- as.matrix(res.fussmann[,377:752])
+niterf <- nrow(resmat)
+
+#Compute posterior predictive distribution of min, max and median
+#log(concentration) of rotifier
+yrep1 <- t(resmat.y1.replicate[1:niterf,1:n])
+yrep1min <- apply(yrep1,2,min)
+yrep1max <- apply(yrep1,2,max)
+yrep1median <- apply(yrep1,2,median)
+
+#Compute posterior predictive distribution of min, max and median #log(concentration) of algae
+yrep2 <- t(resmat.y2.replicate[1:niterf,1:n])
+yrep2min <- apply(yrep2,2,min)
+yrep2max <- apply(yrep2,2,max)
+yrep2median <- apply(yrep2,2,median)
+```
+
+```{r}
+par(mfrow = c(3,2))
+hist(yrep1min, col = "gray40",
+     main = "Predictive distribution for minimum for rotifier")
+abline(v = min(na.omit(y1)), col = "red",lwd = 2)
+hist(yrep2min, col = "gray40",
+     main = "Predictive distribution for minimum for algae")
+abline(v = min(na.omit(y2)), col = "red",lwd = 2)
+hist(yrep1max, col = "gray40", 
+     main = "Predictive distribution for maximum for rotifier")
+abline(v = max(na.omit(y1)), col = "red",lwd = 2)
+hist(yrep2max, col = "gray40", 
+     main = "Predictive distribution for maximum for algae")
+abline(v = max(na.omit(y2)), col = "red",lwd = 2)
+hist(yrep1median, col = "gray40", 
+     main="Predictive distribution for median for rotifier")
+abline(v = median(na.omit(y1)), col="red",lwd = 2)
+hist(yrep2median, col = "gray40",
+     main = "Predictive distribution for median for algae")
+abline(v = median(na.omit(y2)), col = "red",lwd = 2)
+```
+```{r}
+dic.samples(model.fussmann, n.iter=10000, progress.bar = "none")
+```
+
+
+\newpage
+
+**e)[10 marks] Update the model with your informative prior in part d)
+to compute the posterior distribution of the log concentrations sizes
+(**$\mathbf{x}_t$**) on the days 376-395 (20 additional days).**
+
+**Plot the evolution of the posterior mean of the log concentrations for
+rotifier and algae during days 376-395 on a single plot, along with
+curves that correspond to the [2.5%, 97.5%] credible interval of the log
+concentration size (**$\mathbf{x}_t$**) according to the posterior
+distribution at each year [Hint: you need** $2+2\cdot 2 = 6$ **curves in
+total, use different colours for the curves for rotifier and algae].**
+
+**Finally, estimate the posterior probability that the concentration of
+algae (measured in 10\^6 algae/ml, as in the data) becomes smaller
+than** $0.1$ **at any time during this 20 additional days (days
+376-395).**
+
+**Explanation**: 
+
+Looking at the plot in between Day $377$ and $380$, when there is a decrease in the concentration of rotifier we observe the increase in the concentration of algae in a given unit. This shows the predator and prey relationship between rotifier and algae. Also to note that we can see that concentration of rotifier and algae in a given unit have reached the equilibrium [Fussmann et al. 2000](http://www.math.pitt.edu/~bard/classes/mth3380/elner.pdf) at Day $382$. As a result, the model predicts the coexistence at an equilibrium for both rotifiers and algae in a predator and prey settings.
+
+Finally, the estimate of the posterior probability that the concentration of algae becomes smaller than $0.1$ at any time during the predicted days is $0.1036$. In order words, there is an approximately $10\%$ chance of the concentration of algae to become smaller than $0.1$.
+
+```{r}
+n <- nrow(rotifier_algae) + 1
+y1 <- c(NA, log(rotifier_algae[, 3]))
+y2 <- c(NA, log(rotifier_algae[, 2]))
+
+#adding additional 20 values for prediction
+n <- n + 20
+y.pred <- rep(NA, 1*20)
+y1 <- c(y1, y.pred)
+y2 <- c(y2, y.pred)
+
+mean.x01 <- log(6)
+mean.x02 <- log(1.5)
+tau.x0 <- 1/4
+mean.a11 <- 0.15
+mean.a12 <- mean.a21 <- 0
+mean.a22 <- 0.25
+mean.b1 <- log(2.25)
+mean.b2 <- log(3.3)
+tau.a <- tau.b <- 1
+
+sigma.a <- sigma.b <- eta.a <- eta.b <- 0.1
+
+model.data <- list(n = n, y1 = y1, y2 = y2, mean.x01 = mean.x01,
+                   mean.x02 = mean.x02, tau.x0 = tau.x0, 
+                   mean.a11 = mean.a11, mean.a12 = mean.a12, 
+                   mean.a21 = mean.a21, mean.a22 = mean.a22,
+                   tau.a = tau.a, mean.b1 = mean.b1, mean.b2 = mean.b2,
+                   tau.b = tau.b, sigma.a = sigma.a, 
+                   sigma.b = sigma.b, eta.a = eta.a, eta.b = eta.b)
+```
+
+```{r}
+#Defining the model for prediction with 5 chains
+model.pred<- jags.model(textConnection(model.string.fussmann),
+                    data = model.data, n.chains = 5)
+```
+
+```{r}
+#performing MCMC sampling to predict the log concentration of rotifiers and algae
+update(model.pred, 10000, progress.bar = "none")
+res.predict <- coda.samples(model.pred,
+                        variable.names = c("y1", "y2"),
+                        n.iter = 10000, progress.bar="none")
+```
+
+```{r}
+#We compute the posterior means and the 95% credible interval
+res.summary <- summary(res.predict)
+y1.mean <- res.summary$statistics[377:396,1]
+y1.q025 <- res.summary$quantiles[377:396,1]
+y1.q975 <- res.summary$quantiles[377:396,5]
+y2.mean <- res.summary$statistics[773:792,1]
+y2.q025 <- res.summary$quantiles[773:792,1]
+y2.q975 <- res.summary$quantiles[773:792,5]
+```
+
+```{r}
+#plotting the posterior mean and confidence intervals of rotifiers and algae respectively
+plot(377:396, y1.mean, type="l", ylim = c(-3,6), lwd = 2, 
+     col = "red", main = "Posterior mean and 95% credible intervals",
+     xlab = "Day", ylab = "Log Concentration")
+lines(377:396, y1.q025, lty = 3, lwd = 1.5, col = "red")
+lines(377:396, y1.q975, lty = 3, lwd = 1.5, col = "red")
+lines(377:396, y2.mean, type = "l", lwd = 2, col = "blue")
+lines(377:396, y2.q025, lty = 3, lwd = 1.5, col = "blue")
+lines(377:396, y2.q975, lty = 3, lwd = 1.5, col = "blue")
+  legend("topright", legend = c("Rotifier", "Algae"),
+         col = c("red", "blue"), lty = 1, cex = 0.9, bty = "n")
+```
+
+```{r}
+#estimate the posterior probability that the concentration of
+#algae becomes smaller than 0.1
+algae.samp <- data.frame(rbind(res.predict[[1]][,773:792],
+                               res.predict[[2]][,773:792],
+                               res.predict[[3]][,773:792],
+                               res.predict[[4]][,773:792],
+                               res.predict[[5]][,773:792]))
+algae.min <- apply(algae.samp, MARGIN = 1, FUN = min)
+mean(exp(algae.min) < 0.1)
+```
+
+\newpage
+
+![](horse_racing.jpg){width="100%"}
+
+**Problem 2 - Horse racing data**
+
+**In this problem, we are going to construct a predictive model for
+horse races. The dataset (races.csv and runs.csv) contains the
+information about 1000 horse races in Hong Kong during the years
+1997-1998 (originally from <https://www.kaggle.com/gdaley/hkracing>).
+Races.csv contains information about each race (such as distance, venue,
+track conditions, etc.), while runs.csv contains information about each
+horse participating in each race (such as finish time in the race).
+Detailed description of all columns in these files is available in the
+file horse_racing_data_info.txt.**
+
+**Our goal is to model the mean speed of each horse during the races
+based on covariates available before the race begins.**
+
+**We are going to use INLA to fit several different regression models to
+this dataset. First, we load ILNA and the datasets and display the first
+few rows.**
+
+```{r}
+runs <- read.csv(file = 'runs.csv')
+races<- read.csv(file = 'races.csv')
+```
+
+\newpage
+
+**a)[10 marks] Create a dataframe that includes the mean speed of each
+horse in each race and the distance of the race in a column [Hint: you
+can do this adding two extra columns to the runs dataframe].**
+
+**Fit a linear regression model (lm) with the mean speed as a response
+variable. The covariates should be the horse id as a categorical
+variable, and the race distance, horse rating, and horse age as standard
+variable. Scale the non-categorical covariates before fitting the model
+(i.e. center and divide by their standard deviation, you can use the**
+`scale` **function in R for this).**
+
+**Print out the summary of the lm model, discuss the quality of the
+fit.**
+
+**Explanation**: 
+
+Printing out a `summary()` is not easy to read. Hence, we printed out the number of covariates that has p-value greater than $0.05$. The number of variables reported is $992$ and it is nearly $70\%$ of the entire variables. This indicates that the model is not a good fit as too may values. Therefore, we need a different model. By looking at the residual standard error, $0.2038$. This suggests that the linear regression model predicts the mean speed of a horse, with an average error of about $0.2038$ on a log-scale. This means that the model is only able to predict the prices up to 20% relative precision. This suggests that our error is large or the variables that we employed is not efficient to represent the entire dataset. We will take note of these values and now proceed to next parts.
+ 
+```{r}
+#merging the two data sets by race_id and distance
+runs.speed <- merge(runs, races[, c("race_id","distance")], 
+                    by = "race_id", all.x = TRUE)
+#computing the mean speed
+runs.speed$speed <- runs.speed$distance / runs.speed$finish_time
+#making horse_id a factor as it is a categorical variable
+runs.speed$horse_id <- as.factor(runs.speed$horse_id)
+head(runs.speed, 5)
+```
+
+```{r}
+#fitting the linear model with given values.
+fit <- lm(speed ~ horse_id + scale(distance) + 
+            scale(horse_rating) + scale(horse_age), 
+          data = runs.speed)
+
+fit.summary <- summary(fit)
+fit.summary
+```
+
+```{r}
+#computing the total number of variables
+nrow(fit.summary$coefficients)
+#computing the number of variables with p-value > 0.05
+sum(fit.summary$coefficients[, 4] > 0.05)
+```
+
+\newpage
+
+**b)[10 marks] Fit the same model in INLA (i.e. Bayesian linear
+regression with Gaussian likelihood, mean speed is the response
+variable, and the same covariates used with scaling for the
+non-categorical covariates). Set a Gamma (0.1,0.1) prior for the
+precision, and Gaussian priors with mean zero and variance 1000000 for
+all of the regression coefficients (including the intercept).**
+
+**Print out the summary of the INLA model. Compute the posterior mean of
+the variance parameter** $\sigma^2$**. Plot the posterior density for
+the variance parameter** $\sigma^2$**. Compute the negative sum log CPO
+(NSLCPO) and DIC values for this model (smaller values indicate better
+fit).**
+
+**Compute the standard deviation of the mean residuals (i.e. the
+differences between the posterior mean of the fitted values and the true
+response variable).**
+
+**Discuss the results.**
+
+**Explanation**:
+
+We fitted the model in INLA with same variables in part a and the given prior distribution. By looking at the summary,
+
+To that, we computed the negative sum log CPO and DIC. 
+We also plotted the posterior density of sigma and computed the standard deviation of the mean residual of the fitted values. The summary statistics were obtained by `inla.zmarginal`, and the value of $0.1918068$. This is similar to the value we had with the `lm()` model.
+
+```{r}
+prec.prior <- list(prec = list(prior = "loggamma", param = c(0.1, 0.1)))
+
+prior.beta <- list(mean.intercept = 0, prec.intercept = 1/1000000,
+                    mean = 0, prec = 1/1000000)
+
+fit.inla <- inla(speed ~ horse_id + scale(distance) + 
+                   scale(horse_rating) + scale(horse_age), 
+                 data = runs.speed, family = "Gaussian",
+                 control.compute = list(config = TRUE, cpo = TRUE, dic = TRUE),
+                 control.family = list(hyper=prec.prior),
+                 control.fixed = prior.beta)
+```
+
+```{r}
+#Computing the summary statistics 
+summary(fit.inla)
+```
+
+```{r}
+#sigma for the Gaussian observation
+marg.sigma <- inla.tmarginal(function(tau) tau^(-1),
+  fit.inla$marginals.hyperpar[[1]])
+#summary staistics of sigma
+inla.zmarginal(marg.sigma)
+#plotting the posterior density of sigma
+plot(marg.sigma, type = "l", xlab = "x", ylab = "Density",
+     main = 'Posterior density of sigma')
+```
+
+
+```{r}
+#computing NSLCPO and DIC values
+cat("NSLCPO of the model:",-sum(log(fit.inla$cpo$cpo)),"\n")
+cat("DIC of the model:", fit.inla$dic$dic,"\n")
+
+#computing the mean and stddev of the mean residual of the model
+mean.res <- runs.speed$speed - fit.inla$summary.fitted.values$mean
+sd.res <- sd(mean.res)
+cat("Standard deviation of the mean residual of the model:", sd.res,"\n")
+```
+
+\newpage
+
+**c)[10 marks] In this question, we are going to improve the model in b)
+by using more informative priors and more columns from the dataset.**
+
+**First, using some publicly available information from the internet
+(Hint: use Google search) find out about the typical speed of race
+horses in Hong Kong, and use this information to construct a prior for
+the intercept. Explain the rationale for your choice.**
+
+**Second, look through all of the information in the datasets that is
+available before the race (Hint: you need to read the description
+horse_racing_data_info.txt for information about the columns. position,
+behind, result, won, and time related columns are not available before
+the race). Discuss your rationale for including some of these in the
+dataset (make sure to scale them if they are non-categorical).**
+
+**Feel free to try creating additional covariates such as polynomial or
+interaction terms (Hint: this can be done using I() in the formula), and
+you can also try to use a different likelihood (such as Student-t
+distribution).**
+
+**Fit your new model in INLA (i.e. Bayesian linear regression, mean
+speed is the response variable, and scaling done for the non-categorical
+covariates).**
+
+**Print out the summary of the INLA model. Compute the negative sum log
+CPO (NSLCPO) and DIC values for this model (smaller values indicate
+better fit).**
+
+**Compute the standard deviation of the mean residuals (i.e. the
+differences between the posterior mean of the fitted values and the true
+response variable).**
+
+**Discuss the results and compare your model to the model from b).**
+
+**Please only include your best performing model in the report.**
+
+Explanation: 
+
+With some thorough investigation, we referred to the idea in [Silverman et al. 2012](http://www.bjll.org/index.php/jpm/article/download/590/628). The paper employed ordinary least squares to compute the estimate of the regression coefficients. Then it used the Gaussian priors of the mean and standard deviation of the estimates. Similarly, we will use the mean and precision of the fitted value of regression on the dataset to construct the prior of the $\beta$.
+
+With several experiments and intuition, we chose a model with several variables. To name them, we have $horse_id$, $distance$, $distance^2$, $horse_rating$, $horse_age$, $win_odds$, $actual_weight$ and $draw$. 
+
+\begin{enumerate}
+  \item $horse\_id$ : used in previous model
+  \item $horse\_age$ : used in previous model
+  \item $horse\_rating$ : used in previous model
+  \item $distance$ : used in previous model
+  \item $distance^2$ : with trial and error we obtained better performance with polynomial
+  \item $win\_odds$ : win odds for this horse at start of race is important as it indicates higher chance to win the race
+  \item $actual\_weight$ : like age, this has a direct impact to the performance of the horse in the race
+  \item $draw$ : The position of the poll is also a key factor on the performance and it can also indicates the past performance of the horse.
+\end{enumerate}
+
+After the fitting, we computed the NSLCPO and DIC. Comparing to the previous part b, we obtained significant decrease in both NSLCPO and DIC values. Therefore, we can conclude that the model in part c is a better fit. Looking at the standard deviation of the mean residual, we had a lower value of $0.1886289$. Overall, the model in part c shows better fit than the model in part b.
+```{r}
+prec.prior <- list(prec=list(prior = "loggamma", 
+                             param = c(0.1, 0.1)))
+#Newly assigned prior for beta
+prior.beta <- list(mean.intercept = fit.summary$coefficients[1,1], 
+                   prec.intercept = 1/(fit.summary$coefficients[1,2]^2),
+                    mean = 0, prec = 1/1000000)
+
+#fitting in INLA
+fit.inla.silverman <- inla(speed ~ horse_id + scale(distance) +
+                           scale(I(distance^2)) + scale(horse_rating) +
+                           scale(horse_age) + scale(win_odds) +
+                           scale(actual_weight) + factor(draw),
+                         data = runs.speed,
+                         family="gaussian",
+                         control.family=list(hyper=prec.prior),
+                         control.fixed=prior.beta, 
+                         control.compute=list(config=TRUE, cpo=TRUE, dic=TRUE))
+```
+
+```{r}
+#Computing NSLCPO and DIC values
+cat("NSLCPO of the model:",-sum(log(fit.inla.silverman$cpo$cpo)),"\n")
+cat("DIC of the model:", fit.inla.silverman$dic$dic,"\n")
+
+#Computing mean and standard deviation of the mean residual
+mean.res <- runs.speed$speed - fit.inla.silverman$summary.fitted.values$mean
+sd.res <- sd(mean.res)
+cat("Standard deviation of the mean residual of the model:", sd.res,"\n")
+```
+
+\newpage
+
+**d)[10 marks] We are going to perform model checks to evaluate the fit
+the two models in parts b) and c) on the data.**
+
+**Compute the studentized residuals for the Bayesian regression model
+from parts b) and c). Perform a simple Q-Q plot on the studentized
+residuals. Plot the studentized residuals versus their index, and also
+plot the studentized residuals against the posterior mean of the fitted
+value (see Lecture 2). Discuss the results.**
+
+**Explanation**: 
+
+We computed normal Q-Q plot of the studentised residuals for the Bayesian regression models in part b and c. By looking at the plots, we can see that the normality assumption holds for both plots as the fit is reasonably good except for the left tail. This indicates the points below the red line are occurring at much lower values compared to where those quantiles would in the Gaussian distribution and shows that it is left skewed.
+
+Looking at the studentised residuals against the index plot shows that the error terms of the models are independent of each other. 
+
+Looking at the plot, studentised residuals against the fitted value, both models have the residual mean randomly scattered around zero without a distinctive pattern. This further indicates that linear model is good choice to represent the horse racing dataset. Also, we further conclude the homoscedasticity is determined in the model for the mean.
+
+All in all, we cannot determine the goodness of the fit between the two models from part b and part c as all the 3 plots show close similarities. Thus, the difference in the model is insignificant. However, DIC and NSLCPO values play more significant roles in determining the better model which we showed in part c. 
+
+```{r}
+#We obtain the samples from models in part b and c (Silverman)
+nbsamp <- 10
+race.samp <- inla.posterior.sample(nbsamp, fit.inla)
+race.samp.silverman <- inla.posterior.sample(nbsamp, fit.inla.silverman)
+
+sigma <- 1 / sqrt(inla.posterior.sample.eval(function(...) {theta},
+  race.samp))
+sigma.silverman <- 1 / sqrt(inla.posterior.sample.eval(function(...) {theta},
+  race.samp.silverman))
+
+#In this model the link function is the identity, so fitted values are the same as the linear predictors 
+fittedvalues <- inla.posterior.sample.eval(function(...) {Predictor},
+race.samp)
+fittedvalues.silverman <- inla.posterior.sample.eval(function(...) {Predictor},
+race.samp.silverman)
+
+#n is the number of rows in the dataset
+n <- nrow(runs.speed)
+x <- cbind(rep(1,n), runs.speed$horse_id, 
+           scale(runs.speed$distance), 
+           scale(runs.speed$horse_rating), scale(runs.speed$horse_age))
+x.silverman <- cbind(rep(1,n), runs.speed$horse_id,
+                           scale(runs.speed$distance),
+                           scale(runs.speed$horse_rating),
+                           scale((runs.speed$distance)^2),
+                           scale(runs.speed$horse_age),
+                           scale(runs.speed$win_odds), factor(runs.speed$draw),
+                           scale(runs.speed$actual_weight))
+
+H <- x %*% 
+  solve((t(x) %*% x)) %*% t(x)
+H.silverman <- x.silverman %*% 
+  solve((t(x.silverman) %*% x.silverman)) %*% t(x.silverman)
+
+#studentised residuals
+studentisedred <- studentisedred.silverman <- matrix(0, nrow = n, ncol = nbsamp)
+
+#create a matrix of size n * nbsamp, repeating y in each column
+y <- runs.speed$speed
+ymx <- as.matrix(y) %*% matrix(1, nrow = 1, ncol = nbsamp)
+
+studentisedred <- ymx - fittedvalues
+studentisedred.silverman <- ymx - fittedvalues.silverman
+
+for(l in 1:nbsamp){
+  studentisedred[,l] <- studentisedred[,l] / sigma[l]
+  studentisedred.silverman[,l] <- studentisedred.silverman[,l] / 
+    sigma.silverman[l]
+}
+
+for(i in 1:n){
+  studentisedred[i,] <- studentisedred[i,] / sqrt(1-H[i,i])
+  studentisedred.silverman[i,] <- studentisedred.silverman[i,] / 
+    sqrt(1-H.silverman[i,i])
+}
+
+
+#posterior mean of studentised residuals
+studentisedredm <- numeric(n)
+studentisedredm.silverman <- numeric(n)
+for(i in 1:n){
+  studentisedredm[i] <- mean(studentisedred[i,])
+  studentisedredm.silverman[i] <- mean(studentisedred.silverman[i,])
+}
+
+#Plot of normal qqplot to test the normality assumption
+par(mfrow=c(1,2))
+qqnorm(studentisedredm, lwd = 2)
+qqline(studentisedredm, col = 2, lwd = 2)
+qqnorm(studentisedredm.silverman,lwd = 2)
+qqline(studentisedredm.silverman, col = 2, lwd = 2)
+
+#Plot of posterior mean studentised residual versus observation number.
+par(mfrow=c(1,2))
+plot(seq_along(studentisedredm), studentisedredm, 
+     xlab="Index", ylab = "Bayesian studentised residual",
+     main = "Part B")
+plot(seq_along(studentisedredm.silverman), studentisedredm.silverman, 
+     xlab = "Index", ylab = "Bayesian studentised residual",
+     main = "Part C")
+
+#Compute posterior mean fitted values
+fittedvaluesm <- numeric(n)
+fittedvaluesm.silverman <- numeric(n)
+for(i in 1:n){
+  fittedvaluesm[i] <- mean(fittedvalues[i,])
+  fittedvaluesm.silverman[i] <- mean(fittedvalues.silverman[i,])
+}
+
+par(mfrow=c(1,2))
+plot(fittedvaluesm, studentisedredm,
+     main = "Part b",
+     xlab = "Fitted value (posterior mean)",
+     ylab = "Bayesian Studentised residual (posterior mean)")
+plot(fittedvaluesm, studentisedredm.silverman,
+     main = "Part c",
+     xlab = "Fitted value (posterior mean)",
+     ylab = "Bayesian Studentised residual (posterior mean)")
+```
+
+\newpage
+
+**e)[10 marks] In this question, we are going to use the model you have
+constructed in part c) to predict a new race, i.e. calculate the
+posterior probabilities of each participating horse winning that race.
+First, we load the dataset containing information about the future
+race.**
+
+```{r}
+race_to_predict <- read.csv(file = 'race_to_predict.csv')
+runs_to_predict <- read.csv(file = 'runs_to_predict.csv')
+```
+
+**Based on your model from part c), compute the posterior probabilities
+of each of these 14 horses winning the race. [Hint: you will need to
+sample from the posterior predictive distribution.]**
+
+**Explanation**: 
+
+We computed the posterior probabilities of each participating horse winning the race by employing the model defined in part c.
+
+Now looking at the table below, we observe that horse $4$ and $5$ have the highest probability of winning the race. The rest of the horses has probability of less than $0.1$ to win the race. Especially, the horses $2$, $3$  and $11$ show the lowest probability among the others.
+
+```{r}
+# Create new columns
+runs_to_predict$distance <- rep(race_to_predict$distance, nrow(runs_to_predict))
+
+# mean speed is distance/time
+runs_to_predict$horse_id <- as.factor(runs_to_predict$horse_id)
+runs_to_predict$speed <- rep(NA,nrow(runs_to_predict))
+
+runs.new <- rbind(runs.speed,runs_to_predict)
+
+prec.prior <- list(prec=list(prior = "loggamma", 
+                             param = c(0.1, 0.1)))
+
+prior.beta <- list(mean.intercept = fit.summary$coefficients[1,1], 
+                   prec.intercept = 1 / (fit.summary$coefficients[1,2]^2),
+                    mean = 0, prec = 1 / 1000000)
+
+fit.predict <- inla(speed ~ horse_id + scale(distance) +
+                      scale(I(distance^2)) + scale(horse_rating) +
+                      scale(horse_age) + scale(win_odds) +
+                      scale(actual_weight) + factor(draw), 
+                    data = runs.new,
+                    family = "gaussian",
+                    control.family = list(hyper = prec.prior),
+                    control.fixed = prior.beta, 
+                    control.compute = list(config = TRUE))
+
+nbsamp <- 10000
+fit.predict.sample <- inla.posterior.sample(nbsamp, fit.predict,
+                                            selection = list(Predictor=-14:-1))
+
+
+#Obtain the samples from the linear predictors, which is equivalent 
+#to the mean of the observations as the link function is the identity here
+predictor.samples <- inla.posterior.sample.eval(function(...) {Predictor},
+                                             fit.predict.sample)
+
+#We obtain the samples from the parameter sigma using the samples 
+#from the precision 
+sigma.samples <- 1/sqrt(inla.posterior.sample.eval(function(...) {theta},
+                                                fit.predict.sample))
+
+#We obtain the posterior predictive samples by adding the Gaussian noise 
+#from the likelihood to the mean (mu_i=eta_i)
+post.pred.samples <- matrix(0, nrow = 14, ncol = nbsamp)
+for(it in 1:14){
+  post.pred.samples[it,] <- predictor.samples[it,] + 
+    rnorm(nbsamp, mean = 0,sd = sigma.samples)
+}
+
+max.post.pred.samples <- sapply(data.frame(post.pred.samples), which.max)
+table(max.post.pred.samples)/10000
+```
